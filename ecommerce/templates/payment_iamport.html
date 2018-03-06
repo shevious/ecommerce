@@ -1,0 +1,45 @@
+<script type="text/javascript" src="https://service.iamport.kr/js/iamport.payment-1.1.5.js"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+<script type="text/javascript">
+    $(document).ready(function () {
+        var IMP = window.IMP;
+        IMP.init('imp84134497');
+        IMP.request_pay({
+            pg : 'uplus',
+            pay_method : 'card',
+            merchant_uid : '{{ order_number }}' + '_{{ basket_id }}',
+            name : '{{ order_number }}',
+            currency : '{{ currency }}',
+            amount : '{{ amount }}',
+            buyer_email : '{{ user.email }}',
+            buyer_name : '{{ user.username }}',
+            buyer_tel : '010-1234-5678',
+        }, function(rsp) {
+            console.log('{{ basket_id }}');
+            if ( rsp.success ) {
+                //location.href = 'http://localhost:8002/payment/iamport/payment/';
+                $.ajax({
+                    url: "/payment/iamport/pay/",
+                    type: "POST",
+                    dataType: "json",
+                    data: {
+                        payer_id: rsp.imp_uid,
+                        merchant_uid: rsp.merchant_uid,
+                        //amount: 1000,
+                        amount: '{{ amount }}',
+                        basket_id: '{{ basket_id }}',
+                        method: "insert",
+                        csrfmiddlewaretoken: '{{ csrf_token }}'
+                    }
+                }).done(function(data){
+                    location.href = data['receipt_url'];
+                });
+            } else {
+                var msg = '결제에 실패하였습니다.';
+                msg += '\n에러내용 : ' + rsp.error_msg;
+                alert(msg);
+                location.href='{{ cancel_url }}';
+            }
+        });
+    });
+</script>

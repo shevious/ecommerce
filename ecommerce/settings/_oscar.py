@@ -102,6 +102,7 @@ OSCAR_DEFAULT_CURRENCY = 'USD'
 PAYMENT_PROCESSORS = (
     'ecommerce.extensions.payment.processors.cybersource.Cybersource',
     'ecommerce.extensions.payment.processors.paypal.Paypal',
+    'ecommerce.extensions.payment.processors.iamport.Iamport',
 )
 
 PAYMENT_PROCESSOR_RECEIPT_PATH = '/commerce/checkout/receipt/'
@@ -124,6 +125,14 @@ PAYMENT_PROCESSOR_CONFIG = {
             'mode': None,
             'client_id': None,
             'client_secret': None,
+            'receipt_path': PAYMENT_PROCESSOR_RECEIPT_PATH,
+            'cancel_path': PAYMENT_PROCESSOR_CANCEL_PATH,
+            'error_path': PAYMENT_PROCESSOR_ERROR_PATH,
+        },
+        'iamport': {
+            'mode': None,
+            'imp_key': None,
+            'imp_secret': None,
             'receipt_path': PAYMENT_PROCESSOR_RECEIPT_PATH,
             'cancel_path': PAYMENT_PROCESSOR_CANCEL_PATH,
             'error_path': PAYMENT_PROCESSOR_ERROR_PATH,

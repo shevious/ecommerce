@@ -6,19 +6,20 @@ import os
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned
 from django.core.management import call_command
 from django.db import transaction
-from django.http import Http404, HttpResponse, HttpResponseBadRequest
-from django.shortcuts import redirect
+from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.shortcuts import redirect, render
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
 from oscar.apps.partner import strategy
-from oscar.apps.payment.exceptions import PaymentError, UserCancelled, TransactionDeclined
+from oscar.apps.payment.exceptions import PaymentError, UserCancelled, TransactionDeclined, GatewayError
 from oscar.core.loading import get_class, get_model
 
 from ecommerce.extensions.checkout.mixins import EdxOrderPlacementMixin
 from ecommerce.extensions.payment.exceptions import InvalidSignatureError
 from ecommerce.extensions.payment.processors.cybersource import Cybersource
 from ecommerce.extensions.payment.processors.paypal import Paypal
+from ecommerce.extensions.payment.processors.iamport import Iamport
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,104 @@ NoShippingRequired = get_class('shipping.methods', 'NoShippingRequired')
 OrderNumberGenerator = get_class('order.utils', 'OrderNumberGenerator')
 OrderTotalCalculator = get_class('checkout.calculators', 'OrderTotalCalculator')
 PaymentProcessorResponse = get_model('payment', 'PaymentProcessorResponse')
+
+
+@csrf_exempt
+def paymentdata(request):
+    amount = request.POST.get('amount')
+    basket_id = request.POST.get('basket_id')
+    order_number = request.POST.get('order_number')
+    cancel_url = request.POST.get('cancel_url')
+    currency = request.POST.get('currency')
+    return render(request, 'payment_iamport.html', {'amount': amount, 'basket_id': basket_id, 'order_number': order_number, 'cancel_url': cancel_url, 'currency': currency})
+
+
+class IamportView(EdxOrderPlacementMixin, View):
+    @property
+    def payment_processor(self):
+        return Iamport()
+
+    @method_decorator(csrf_exempt)
+    @method_decorator(transaction.non_atomic_requests)
+    def dispatch(self, request, *args, **kwargs):
+        return super(IamportView, self).dispatch(request, *args, **kwargs)
+
+    def _get_basket(self, payment_id):
+        """
+        Retrieve a basket using a payment ID.
+
+        Arguments:
+            payment_id: payment_id received from PayPal.
+
+        Returns:
+            It will return related basket or log exception and return None if
+            duplicate payment_id received or any other exception occurred.
+
+        """
+
+        try:
+            basket = PaymentProcessorResponse.objects.get(
+                processor_name=self.payment_processor.NAME,
+                transaction_id=payment_id
+            ).basket
+            basket.strategy = strategy.Default()
+            Applicator().apply(basket, basket.owner, self.request)
+
+            return basket
+        except MultipleObjectsReturned:
+            logger.exception(u"Duplicate payment ID [%s] received from PayPal.", payment_id)
+            return None
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(u"Unexpected error during basket retrieval while executing PayPal payment.")
+            return None
+
+
+    def post(self, request):
+        """Handle an incoming user returned to us by PayPal after approving payment."""
+        basket = self._get_basket(request.POST.get('merchant_uid'))
+
+        if not basket:
+            return redirect(self.payment_processor.error_url)
+
+        receipt_url = u'{}?orderNum={}'.format(self.payment_processor.receipt_url, basket.order_number)
+
+        try:
+            with transaction.atomic():
+                try:
+                    self.handle_payment(request.POST, basket)
+                except GatewayError as e:
+                    print e
+                    return redirect(self.payment_processor.error_url)
+        except:  # pylint: disable=bare-except
+            logger.exception('Attempts to handle payment for basket [%d] failed.', basket.id)
+            return redirect(receipt_url)
+
+        try:
+            shipping_method = NoShippingRequired()
+            shipping_charge = shipping_method.calculate(basket)
+            order_total = OrderTotalCalculator().calculate(basket, shipping_charge)
+
+            user = basket.owner
+            # Given a basket, order number generation is idempotent. Although we've already
+            # generated this order number once before, it's faster to generate it again
+            # than to retrieve an invoice number from PayPal.
+            order_number = basket.order_number
+
+            self.handle_order_placement(
+                order_number=order_number,
+                user=user,
+                basket=basket,
+                shipping_address=None,
+                shipping_method=shipping_method,
+                shipping_charge=shipping_charge,
+                billing_address=None,
+                order_total=order_total
+            )
+
+            return JsonResponse({'receipt_url': receipt_url})
+        except:  # pylint: disable=bare-except
+            logger.exception(self.order_placement_failure_msg, basket.id)
+            return redirect(receipt_url)
 
 
 class CybersourceNotifyView(EdxOrderPlacementMixin, View):
