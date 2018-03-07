@@ -62,7 +62,6 @@ class Iamport(BasePaymentProcessor):
             merchant_uid = response['merchant_uid']
             price = response['amount']
             pay_data = iamport.find(merchant_uid=merchant_uid)
-            # price = int(10000)  # test
             price = int(price)
             self.record_processor_response({'message': 'Payment Submitted', 'response': pay_data}, transaction_id=merchant_uid, basket=basket)
 
