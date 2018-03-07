@@ -263,6 +263,98 @@ class PaypalPaymentExecutionView(EdxOrderPlacementMixin, View):
             logger.exception(self.order_placement_failure_msg, basket.id)
             return redirect(receipt_url)
 
+class DumpayPaymentExecutionView(EdxOrderPlacementMixin, View):
+    """Execute an approved PayPal payment and place an order for paid products as appropriate."""
+    @property
+    def payment_processor(self):
+        return Paypal()
+
+    # Disable atomicity for the view. Otherwise, we'd be unable to commit to the database
+    # until the request had concluded; Django will refuse to commit when an atomic() block
+    # is active, since that would break atomicity. Without an order present in the database
+    # at the time fulfillment is attempted, asynchronous order fulfillment tasks will fail.
+    @method_decorator(transaction.non_atomic_requests)
+    def dispatch(self, request, *args, **kwargs):
+        return super(PaypalPaymentExecutionView, self).dispatch(request, *args, **kwargs)
+
+    def _get_basket(self, payment_id):
+        """
+        Retrieve a basket using a payment ID.
+
+        Arguments:
+            payment_id: payment_id received from PayPal.
+
+        Returns:
+            It will return related basket or log exception and return None if
+            duplicate payment_id received or any other exception occurred.
+
+        """
+        try:
+            basket = PaymentProcessorResponse.objects.get(
+                processor_name=self.payment_processor.NAME,
+                transaction_id=payment_id
+            ).basket
+            basket.strategy = strategy.Default()
+            Applicator().apply(basket, basket.owner, self.request)
+            return basket
+        except MultipleObjectsReturned:
+            logger.exception(u"Duplicate payment ID [%s] received from PayPal.", payment_id)
+            return None
+        except Exception:  # pylint: disable=broad-except
+            logger.exception(u"Unexpected error during basket retrieval while executing PayPal payment.")
+            return None
+
+    def get(self, request):
+        """Handle an incoming user returned to us by PayPal after approving payment."""
+        payment_id = request.GET.get('paymentId')
+        payer_id = request.GET.get('PayerID')
+        logger.info(u"Payment [%s] approved by payer [%s]", payment_id, payer_id)
+
+        dumpay_response = request.GET.dict()
+        basket = self._get_basket(payment_id)
+
+        if not basket:
+            return redirect(self.payment_processor.error_url)
+
+        receipt_url = u'{}?orderNum={}'.format(self.payment_processor.receipt_url, basket.order_number)
+
+        try:
+            with transaction.atomic():
+                try:
+                    self.handle_payment(dumpay_response, basket)
+                except PaymentError:
+                    return redirect(self.payment_processor.error_url)
+        except:  # pylint: disable=bare-except
+            logger.exception('Attempts to handle payment for basket [%d] failed.', basket.id)
+            return redirect(receipt_url)
+
+        try:
+            shipping_method = NoShippingRequired()
+            shipping_charge = shipping_method.calculate(basket)
+            order_total = OrderTotalCalculator().calculate(basket, shipping_charge)
+
+            user = basket.owner
+            # Given a basket, order number generation is idempotent. Although we've already
+            # generated this order number once before, it's faster to generate it again
+            # than to retrieve an invoice number from PayPal.
+            order_number = basket.order_number
+
+            self.handle_order_placement(
+                order_number=order_number,
+                user=user,
+                basket=basket,
+                shipping_address=None,
+                shipping_method=shipping_method,
+                shipping_charge=shipping_charge,
+                billing_address=None,
+                order_total=order_total
+            )
+
+            return redirect(receipt_url)
+        except:  # pylint: disable=bare-except
+            logger.exception(self.order_placement_failure_msg, basket.id)
+            return redirect(receipt_url)
+
 
 class PaypalProfileAdminView(View):
 

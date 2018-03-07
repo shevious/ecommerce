@@ -94,7 +94,7 @@ AUTHENTICATION_BACKENDS = (
     'django.contrib.auth.backends.ModelBackend',
 )
 
-OSCAR_DEFAULT_CURRENCY = 'USD'
+OSCAR_DEFAULT_CURRENCY = 'JPY'
 # END ORDER PROCESSING
 
 
@@ -102,6 +102,7 @@ OSCAR_DEFAULT_CURRENCY = 'USD'
 PAYMENT_PROCESSORS = (
     'ecommerce.extensions.payment.processors.cybersource.Cybersource',
     'ecommerce.extensions.payment.processors.paypal.Paypal',
+    'ecommerce.extensions.payment.processors.dumpay.Dumpay',
 )
 
 PAYMENT_PROCESSOR_RECEIPT_PATH = '/commerce/checkout/receipt/'

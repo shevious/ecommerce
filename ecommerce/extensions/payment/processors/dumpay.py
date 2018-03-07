@@ -1,5 +1,5 @@
 """ PayPal payment processing. """
-from decimal import Decimal, ROUND_UP
+from decimal import Decimal
 import logging
 from urlparse import urljoin
 
@@ -27,14 +27,14 @@ Source = get_model('payment', 'Source')
 SourceType = get_model('payment', 'SourceType')
 
 
-class Paypal(BasePaymentProcessor):
+class Dumpay(BasePaymentProcessor):
     """
     PayPal REST API (May 2015)
 
     For reference, see https://developer.paypal.com/docs/api/.
     """
 
-    NAME = u'paypal'
+    NAME = u'dumpay'
     DEFAULT_PROFILE_NAME = 'default'
 
     def __init__(self):
@@ -45,19 +45,7 @@ class Paypal(BasePaymentProcessor):
             KeyError: If a required setting is not configured for this payment processor
         """
         # Number of times payment execution is retried after failure.
-        self.retry_attempts = self.configuration.get('retry_attempts', 1)
-
-    @cached_property
-    def paypal_api(self):
-        """
-        Returns Paypal API instance with appropriate configuration
-        Returns: Paypal API instance
-        """
-        return paypalrestsdk.Api({
-            'mode': self.configuration['mode'],
-            'client_id': self.configuration['client_id'],
-            'client_secret': self.configuration['client_secret']
-        })
+        #self.retry_attempts = self.configuration.get('retry_attempts', 1)
 
     @property
     def receipt_url(self):
@@ -89,7 +77,7 @@ class Paypal(BasePaymentProcessor):
             GatewayError: Indicates a general error or unexpected behavior on the part of PayPal which prevented
                 a payment from being created.
         """
-        return_url = urljoin(get_ecommerce_url(), reverse('paypal_execute'))
+        return_url = urljoin(get_ecommerce_url(), reverse('dumpay_execute'))
         data = {
             'intent': 'sale',
             'redirect_urls': {
@@ -97,11 +85,11 @@ class Paypal(BasePaymentProcessor):
                 'cancel_url': self.cancel_url,
             },
             'payer': {
-                'payment_method': 'paypal',
+                'payment_method': 'dumpay',
             },
             'transactions': [{
                 'amount': {
-                    'total': unicode(basket.total_incl_tax.quantize(Decimal('1.'), rounding=ROUND_UP)),
+                    'total': unicode(basket.total_incl_tax),
                     'currency': basket.currency,
                 },
                 'item_list': {
@@ -112,7 +100,7 @@ class Paypal(BasePaymentProcessor):
                             'name': middle_truncate(line.product.title, 127),
                             # PayPal requires that the sum of all the item prices (where price = price * quantity)
                             # equals to the total amount set in amount['total'].
-                            'price': unicode((line.line_price_incl_tax_incl_discounts / line.quantity).quantize(Decimal('1.'), rounding=ROUND_UP)),
+                            'price': unicode(line.line_price_incl_tax_incl_discounts / line.quantity),
                             'currency': line.stockrecord.price_currency,
                         }
                         for line in basket.all_lines()
@@ -122,17 +110,9 @@ class Paypal(BasePaymentProcessor):
             }],
         }
 
-        try:
-            web_profile = PaypalWebProfile.objects.get(name=self.DEFAULT_PROFILE_NAME)
-            data['experience_profile_id'] = web_profile.id
-        except PaypalWebProfile.DoesNotExist:
-            pass
-
-        payment = paypalrestsdk.Payment(data, api=self.paypal_api)
-        payment.create()
-
         # Raise an exception for payments that were not successfully created. Consuming code is
         # responsible for handling the exception.
+        '''
         if not payment.success():
             error = self._get_error(payment)
             entry = self.record_processor_response(error, transaction_id=error['debug_id'], basket=basket)  # pylint: disable=unsubscriptable-object
@@ -144,22 +124,13 @@ class Paypal(BasePaymentProcessor):
             )
 
             raise GatewayError(error)
+            '''
 
-        entry = self.record_processor_response(payment.to_dict(), transaction_id=payment.id, basket=basket)
-        logger.info(u"Successfully created PayPal payment [%s] for basket [%d].", payment.id, basket.id)
+        #entry = self.record_processor_response(data.to_dict(), transaction_id=basket.order_number, basket=basket)
+        entry = self.record_processor_response(data, transaction_id=basket.order_number, basket=basket)
+        logger.info(u"Successfully created Dumpay payment [%s] for basket [%d].", "NO_ID", basket.id)
 
-        for link in payment.links:
-            if link.rel == 'approval_url':
-                approval_url = link.href
-                break
-        else:
-            logger.error(
-                u"Approval URL missing from PayPal payment [%s]. PayPal's response was recorded in entry [%d].",
-                payment.id,
-                entry.id
-            )
-            raise GatewayError(
-                'Approval URL missing from PayPal payment response. See entry [{}] for details.'.format(entry.id))
+        approval_url = '/payment/dumpay/call/?basket_id=%d' % basket.id
 
         parameters = {
             'payment_page_url': approval_url,
@@ -183,59 +154,39 @@ class Paypal(BasePaymentProcessor):
             GatewayError: Indicates a general error or unexpected behavior on the part of PayPal which prevented
                 an approved payment from being executed.
         """
-        data = {'payer_id': response.get('PayerID')}
+        #data = {'payer_id': response.get('PayerID')}
+        data = response
+        logger.info(data)
 
         # By default PayPal payment will be executed only once.
         available_attempts = 1
 
         # Add retry attempts (provided in the configuration)
         # if the waffle switch 'ENABLE_PAYPAL_RETRY' is set
-        if waffle.switch_is_active('PAYPAL_RETRY_ATTEMPTS'):
+        if waffle.switch_is_active('DUMPAY_RETRY_ATTEMPTS'):
             available_attempts = available_attempts + self.retry_attempts
 
-        for attempt_count in range(1, available_attempts + 1):
+        # Add server to server verification
+        # ....
 
-            payment = paypalrestsdk.Payment.find(response.get('paymentId'), api=self.paypal_api)
-            payment.execute(data)
 
-            if payment.success():
-                # On success break the loop.
-                break
+        payment = {
+            'id': data['transaction_id'],
+            'payer_id': data['payer_id'],
+        }
 
-            # Raise an exception for payments that were not successfully executed. Consuming code is
-            # responsible for handling the exception
-            error = self._get_error(payment)
-            entry = self.record_processor_response(error, transaction_id=error['debug_id'], basket=basket)  # pylint: disable=unsubscriptable-object
-
-            logger.warning(
-                u"Failed to execute PayPal payment on attempt [%d]. "
-                u"PayPal's response was recorded in entry [%d].",
-                attempt_count,
-                entry.id
-            )
-
-            # After utilizing all retry attempts, raise the exception 'GatewayError'
-            if attempt_count == available_attempts:
-                logger.error(
-                    u"Failed to execute PayPal payment [%s]. "
-                    u"PayPal's response was recorded in entry [%d].",
-                    payment.id,
-                    entry.id
-                )
-                raise GatewayError
-
-        self.record_processor_response(payment.to_dict(), transaction_id=payment.id, basket=basket)
-        logger.info(u"Successfully executed PayPal payment [%s] for basket [%d].", payment.id, basket.id)
+        self.record_processor_response(payment, transaction_id=payment['id'], basket=basket)
+        logger.info(u"Successfully executed PayPal payment [%s] for basket [%d].", payment['id'], basket.id)
 
         # Get or create Source used to track transactions related to PayPal
         source_type, __ = SourceType.objects.get_or_create(name=self.NAME)
-        currency = payment.transactions[0].amount.currency
-        total = Decimal(payment.transactions[0].amount.total)
-        transaction_id = payment.id
+        currency = basket.currency
+        total = basket.total_incl_tax
+        transaction_id = payment['id']
         # payer_info.email may be None, see:
         # http://stackoverflow.com/questions/24090460/paypal-rest-api-return-empty-payer-info-for-non-us-accounts
-        email = payment.payer.payer_info.email
-        label = 'PayPal ({})'.format(email) if email else 'PayPal Account'
+        email = payment['payer_id']
+        label = 'Dumpay ({})'.format(email) if email else 'Dumpay Account'
 
         source = Source(
             source_type=source_type,
