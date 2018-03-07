@@ -14,6 +14,8 @@ from oscar.apps.payment.exceptions import PaymentError, UserCancelled, Transacti
 
 from ecommerce.extensions.checkout.mixins import EdxOrderPlacementMixin
 from ecommerce.extensions.payment.processors.dumpay import Dumpay
+from ecommerce.core.url_utils import get_ecommerce_url
+from django.core.urlresolvers import reverse
 
 from django.shortcuts import redirect
 from urlparse import urljoin
@@ -70,12 +72,15 @@ class DumpayPaymentCallView(View):
         logger.info(basket)
         dumpay_response = {
             "transaction_id": form.cleaned_data['transaction_id'],
-            "payer_id": form.cleaned_data['payer_id']
+            "payer_id": form.cleaned_data['payer_id'],
+            "basekt_id": basket_id
         }
         receipt_url = u'{}?orderNum={}'.format(self.payment_processor.receipt_url, basket.order_number)
         url = urljoin(get_ecommerce_url(), reverse('dumpay_execute'))
-        execute_url = u'{}?transactionid={}&payerid={}'.format(url,form.cleaned_data['transaction_id'], form.cleaned_data['payer_id'])
+        #execute_url = u'{}?transactionId={}&payerId={}&basketId={}'.format(url,form.cleaned_data['transaction_id'],form.cleaned_data['payer_id'], basket_id)
+        execute_url = u'{}?transactionId={}&payerId={}&basketId={}'.format(url,basket.order_number,form.cleaned_data['payer_id'], basket_id)
         logger.info(dumpay_response)
+        return redirect(execute_url)
         try:
             with transaction.atomic():
                 try:

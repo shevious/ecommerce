@@ -19,6 +19,7 @@ from ecommerce.extensions.checkout.mixins import EdxOrderPlacementMixin
 from ecommerce.extensions.payment.exceptions import InvalidSignatureError
 from ecommerce.extensions.payment.processors.cybersource import Cybersource
 from ecommerce.extensions.payment.processors.paypal import Paypal
+from ecommerce.extensions.payment.processors.dumpay import Dumpay
 
 
 logger = logging.getLogger(__name__)
@@ -267,7 +268,7 @@ class DumpayPaymentExecutionView(EdxOrderPlacementMixin, View):
     """Execute an approved PayPal payment and place an order for paid products as appropriate."""
     @property
     def payment_processor(self):
-        return Paypal()
+        return Dumpay()
 
     # Disable atomicity for the view. Otherwise, we'd be unable to commit to the database
     # until the request had concluded; Django will refuse to commit when an atomic() block
@@ -275,7 +276,7 @@ class DumpayPaymentExecutionView(EdxOrderPlacementMixin, View):
     # at the time fulfillment is attempted, asynchronous order fulfillment tasks will fail.
     @method_decorator(transaction.non_atomic_requests)
     def dispatch(self, request, *args, **kwargs):
-        return super(PaypalPaymentExecutionView, self).dispatch(request, *args, **kwargs)
+        return super(DumpayPaymentExecutionView, self).dispatch(request, *args, **kwargs)
 
     def _get_basket(self, payment_id):
         """
@@ -294,6 +295,7 @@ class DumpayPaymentExecutionView(EdxOrderPlacementMixin, View):
                 processor_name=self.payment_processor.NAME,
                 transaction_id=payment_id
             ).basket
+
             basket.strategy = strategy.Default()
             Applicator().apply(basket, basket.owner, self.request)
             return basket
@@ -306,12 +308,17 @@ class DumpayPaymentExecutionView(EdxOrderPlacementMixin, View):
 
     def get(self, request):
         """Handle an incoming user returned to us by PayPal after approving payment."""
-        payment_id = request.GET.get('paymentId')
-        payer_id = request.GET.get('PayerID')
-        logger.info(u"Payment [%s] approved by payer [%s]", payment_id, payer_id)
+        transaction_id = request.GET.get('transactionId')
+        payer_id = request.GET.get('payerId')
+        basket_id = request.GET.get('basketId')
+        logger.info(u"Payment [%s] approved by payer [%s]", transaction_id, payer_id, basket_id)
 
-        dumpay_response = request.GET.dict()
-        basket = self._get_basket(payment_id)
+        #dumpay_response = request.GET.dict()
+        dumpay_response = {
+            "transaction_id": transaction_id,
+            "payer_id": payer_id,
+        }
+        basket = self._get_basket(transaction_id)
 
         if not basket:
             return redirect(self.payment_processor.error_url)
@@ -329,8 +336,14 @@ class DumpayPaymentExecutionView(EdxOrderPlacementMixin, View):
             return redirect(receipt_url)
 
         try:
+            # Note (CCB): In the future, if we do end up shipping physical products, we will need to
+            # properly implement shipping methods. For more, see
+            # http://django-oscar.readthedocs.org/en/latest/howto/how_to_configure_shipping.html.
             shipping_method = NoShippingRequired()
             shipping_charge = shipping_method.calculate(basket)
+
+            # Note (CCB): This calculation assumes the payment processor has not sent a partial authorization,
+            # thus we use the amounts stored in the database rather than those received from the payment processor.
             order_total = OrderTotalCalculator().calculate(basket, shipping_charge)
 
             user = basket.owner
@@ -340,14 +353,14 @@ class DumpayPaymentExecutionView(EdxOrderPlacementMixin, View):
             order_number = basket.order_number
 
             self.handle_order_placement(
-                order_number=order_number,
-                user=user,
-                basket=basket,
-                shipping_address=None,
-                shipping_method=shipping_method,
-                shipping_charge=shipping_charge,
-                billing_address=None,
-                order_total=order_total
+                order_number,
+                user,
+                basket,
+                None,
+                shipping_method,
+                shipping_charge,
+                None,
+                order_total
             )
 
             return redirect(receipt_url)
